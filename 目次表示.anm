@@ -1,0 +1,834 @@
+--track0:項目,0,100,1,1
+--track1:ｲﾝﾃﾞﾝﾄ,0,10,1,0.1
+--track2:深度ｻｲｽﾞ,-100,100,10,0.1
+--track3:選択ｻｲｽﾞ,-100,100,20,0.1
+--dialog:選択文字色/col,tcolor1=0xFFFFFF;選択文字縁色/col,tcolor2=0x000000;上位項目を含む/chk,tcheck1=1;折りたたむ/chk,tcheck2=1;背景を表示する/chk,tcheck3=1;背景右長さ,ttrack0=2;背景ﾌｫﾙﾀﾞ,fold_back="";枠左余白,left_offset=0;枠上余白,ceil_offset=0;枠下余白,floor_offset=0;
+
+--項目の進み具合を整数にしておく
+local t0=math.floor(obj.track0)
+
+--rikky_moduleを使います
+local R = require("rikky_module")
+R.fold(7)
+
+--＜テキスト全体解析部分＞
+--とりあえずテキスト全体を変数化
+local allstr = R.getinfo("text")
+--1行ごとに[文字列,インデントの深さ]の組にして配列にする(#1つでインデント1つとする)
+local astab = R.textsplit(allstr)
+local items = {}
+local sentbuf = ""
+local indnum = 0
+local indfalg = true --インデントをカウント中かどうか(## #をインデント2つ+"#"と判定するためのもの)
+for i=1, #astab do
+	if astab[i] == "\n" or i == #astab then --配列にインデントの数と一緒に格納
+		sentbuf = sentbuf..astab[i]
+		item = {}
+		item["sentence"] = sentbuf --１行の文字列
+		item["indent"] = indnum --インデントの数
+		item["emphasis"] = false --文字を強調するかどうか
+		item["series"] = false --現在選択している項目の直系にあたる項目かどうか
+		item["indicate"] = false --表示するかどうか
+		if tcheck2 == 0 then
+			item["indicate"] = true
+		end
+		item["indent_size"] = 0 --インデントのサイズ
+		item["text_size"] = 0 --最終的に表示される文字のサイズ
+		item["text_position"] = 0 --このテキストまでの全ての行及び行間のサイズの合計(このテキスト含む)(つまりこのテキストの直ぐ下の位置)
+		items[#items+1] = item
+		sentbuf = ""
+		indnum = 0
+		indfalg = true
+	elseif astab[i] == "#" and indfalg == true then --インデントを下げる
+		indnum = indnum + 1
+	elseif astab[i] == " " and indfalg == true then --インデントタイム修了
+		indfalg = false
+	else --文字として判定し、バッファに追加
+		sentbuf = sentbuf..astab[i]
+		indfalg = false
+	end
+end
+
+--＜テキスト該当箇所探索部分＞
+if t0 > #items then
+	t0 = #items
+end
+if t0 ~= 0 then
+	items[t0]["emphasis"] = true
+	items[t0]["series"] = true
+	local searched = items[t0]["indent"]
+	local sptr = t0
+	while searched > 0 and sptr > 0 do
+		if items[sptr]["indent"] < searched then
+			if tcheck1==1 then
+				items[sptr]["emphasis"] = true
+			end
+			items[sptr]["series"] = true
+			searched = searched - 1
+		end
+		sptr = sptr - 1
+	end
+end
+
+--＜テキストの表示される場所を解析＞
+--前方向
+local delind = 0
+local delptr = 1
+local nexptr = 1
+local flsearch = true
+while delptr < #items+1 do
+	if flsearch then --基準となる項目を探す段階
+		if items[delptr]["series"] then
+			items[delptr]["indicate"] = true
+			nexptr = delptr + 1
+			delind = items[delptr]["indent"]
+			flsearch = false
+		end
+		delptr = delptr + 1
+	else --基準となる項目から他を削除する段階
+		if items[delptr]["indent"] < delind then
+			flsearch = true
+			delptr = nexptr
+		elseif items[delptr]["indent"] == delind then
+			items[delptr]["indicate"] = true
+			delptr = delptr + 1
+		else
+			delptr = delptr + 1
+		end
+		if delptr == #items+1 and nexptr < delptr then
+			flsearch = true
+			delptr = nexptr
+		end
+	end
+end
+--後方向
+delind = 0
+delptr = #items
+nexptr = #items
+flsearch = true
+while delptr > 0 do
+	if flsearch then --基準となる項目を探す段階
+		if items[delptr]["series"] then
+			items[delptr]["indicate"] = true
+			nexptr = delptr - 1
+			delind = items[delptr]["indent"]
+			flsearch = false
+		end
+		delptr = delptr - 1
+	else --基準となる項目から他を削除する段階
+		if items[delptr]["indent"] < delind then
+			flsearch = true
+			delptr = nexptr
+		elseif items[delptr]["indent"] == delind then
+			items[delptr]["indicate"] = true
+			delptr = delptr - 1
+		else
+			delptr = delptr - 1
+		end
+		if delptr == 0 and nexptr > delptr then
+			flsearch = true
+			delptr = nexptr
+		end
+	end
+end
+
+--一番根の部分にある項目は常に表示されるべき
+for i=1, #items do
+	if items[i]["indent"] == 0 then
+		items[i]["indicate"] = true
+	end
+end
+
+--インデントの数に応じてフォントサイズを返す関数
+local function get_textsize(basic_size, indent_num, reduction_ratio)
+	return basic_size*(((100 + reduction_ratio) / 100)^indent_num)
+end
+
+local function get_adjust_size(text_spacing, basic_text_size, text_size)
+	return text_spacing * text_size / 32
+end
+
+--テキストの字間を調節する
+local function adjust_spacing_x(text, text_spacing, text_size, basic_text_size)
+	--制御文字を設定
+	local spacing_str = ""
+	local spacing_num = math.floor(get_adjust_size(text_spacing, basic_text_size, text_size))
+	if spacing_num < 0 then
+		spacing_str = string.format("<p%d,+0>", spacing_num)
+	else
+		spacing_str = string.format("<p+%d,+0>", spacing_num)
+	end
+	--テキストに制御文字を入れる
+	local char_array = R.textsplit(text)
+	local new_text = ""
+	for i=1, #char_array do
+		new_text = new_text..char_array[i]
+		if char_array[i] ~= "\n"then
+			if i ~= #char_array then
+				if char_array[i+1] ~= "\n"then
+					new_text = new_text..spacing_str
+				end
+			end
+		end
+	end
+	return new_text
+end
+
+--＜テキスト生成部分＞
+local object, data = R.getinfo("object")
+local font = R.getinfo("font")
+local ntext = ""
+local yspn = 0
+for i=1, #items do
+	--テキストのサイズを設定
+	local textsize = get_textsize(font.size, items[i]["indent"], obj.track2)
+	if textsize < 1 then
+		textsize = 1
+	end
+	if items[i]["emphasis"] then
+		textsize = (100+obj.track3) * textsize / 100
+	end
+	items[i]["text_size"] = math.floor(textsize)
+
+	--テキストの色を設定
+	local textcolor = data.color
+	local textcolor2 = data.color2
+	if items[i]["emphasis"] then
+		textcolor = tcolor1
+		textcolor2 = tcolor2
+	end
+	
+	--インデントの処理
+	local tabsize = 0
+	for j=1, items[i]["indent"] do
+		local tabtextsize = get_textsize(font.size, j, obj.track2)
+		if tabtextsize < 1 then
+			tabtextsize = 1
+		end
+		tabsize = tabsize + tabtextsize*obj.track1
+	end
+	tabsize = math.floor(tabsize)
+	items[i]["indent_size"] = tabsize
+	
+	--文字揃え処理
+	if items[i]["indicate"] then
+		yspn = math.floor((yspn + get_adjust_size(data.spacing_y, font.size, items[i]["text_size"]) ) / 2) --テキストのy軸方向の開始位置
+	end
+	--xspn = math.floor(data.spacing_x * items[i]["text_size"] / font.size) --テキストのx軸方向の開始位置
+	local widpm = ""
+	if yspn < 0 then
+		widpm = string.format("<p+%d,%d>", items[i]["indent_size"], yspn)
+	else
+		widpm = string.format("<p+%d,+%d>", items[i]["indent_size"], yspn)
+	end
+	--テキストの行間を保持
+	if items[i]["indicate"] then
+		items[i]["text_position"] = yspn
+	else
+		items[i]["text_position"]  = 0
+	end
+
+	if items[i]["indicate"] then
+		yspn = math.floor(get_adjust_size(data.spacing_y, font.size, items[i]["text_size"])) --これは一個前の行の太さを反映するように
+	end
+
+	--テキストの形にする
+	local textone = widpm..string.format("<s%d>", items[i]["text_size"])..string.format("<#%06x,%06x>", textcolor, textcolor2)..adjust_spacing_x(items[i]["sentence"], data.spacing_x, items[i]["text_size"], font.size)
+	if tcheck2 == 1 then
+		if items[i]["indicate"] then
+			ntext = ntext..textone
+		end
+	else
+		ntext = ntext..textone
+	end
+end
+
+--＜テキストに関する情報を保持＞
+local d_font = data.font
+local f_size = font.size
+local d_type = data.type
+local d_color = data.color
+local d_color2 = data.color2
+
+--＜設定ファイルの読み込み＞
+local function load_theme_ini()
+	local ini_raw_text = ""
+	for line in io.lines(fold_back.."\\setting.ini") do
+		ini_raw_text = ini_raw_text..line.."\n"
+	end
+	obj.load("text",ini_raw_text)
+	--＜テキスト全体解析部分＞
+	--とりあえずテキスト全体を変数化
+	local inistr = R.getinfo("text")
+	--1行ごとに[文字列,インデントの深さ]の組にして配列にする(#1つでインデント1つとする)
+	local ini_split = R.textsplit(inistr)
+	local ini_name_buf = ""
+	local ini_param_buf = ""
+	local ini_dict = {}
+	ini_dict["FrameType"] = "None"
+	ini_dict["RuledLineType"] = "None"
+	ini_dict["BackImageType"] = "None"
+	ini_dict["CornerType"] = "None"
+	ini_dict["BackImagePosition"] = "LeftCeil"
+	ini_dict["PatchQuantity"] = "0"
+	local param_mode = false
+	for i=1, #ini_split do
+		if ini_split[i] == "\n" or i == #ini_split then 
+			--パラメータを格納する
+			if param_mode then
+				ini_dict[ini_name_buf] = ini_param_buf
+			end
+			--初期状態に戻す
+			ini_name_buf = ""
+			ini_param_buf = ""
+			param_mode = false
+		elseif ini_split[i] == "=" and param_mode == false then --パラメータの読み取り開始
+			param_mode = true
+		elseif ini_split[i] ~= " " then
+			if param_mode then
+				ini_param_buf = ini_param_buf..ini_split[i]
+			else
+				ini_name_buf = ini_name_buf..ini_split[i]
+			end
+		end
+	end
+	return ini_dict
+end
+
+--＜配置するオブジェクトの位置や大きさの情報をまとめて取得・計算＞
+--[オブジェクトジャンル名][ジャンル内オブジェクト名][パラメータ名]
+--パラメータ名はH,W,X,Y,L,R,F,Cで表記(Height,Width,X,Y,Left,Right,Floor,Ceilの略)
+--枠及び角の条件
+--枠→上下の幅、左右の高さが、それぞれ一致
+--角→上下それぞれについて、左右で高さが同じ。また、左右それぞれについて上下で幅が同じ。
+local function load_object_positions(ini_dict, text_object, index_items)
+	local pos_dict = {}
+	--＜テキスト部分のサイズを取得＞
+	obj.load("text",text_object)
+	obj.setfont(d_font,f_size,d_type,d_color,d_color2)
+	pos_dict["Text"] = {}
+	pos_dict["Text"]["H"] = obj.h
+	pos_dict["Text"]["W"] = obj.w
+
+	--＜罫線の位置＞
+	local items_size_sum = 0
+	local y_spacing_sum = 0
+	for i=1, #index_items do
+		if index_items[i]["indicate"] then
+			items_size_sum = items_size_sum + index_items[i]["text_size"]
+			y_spacing_sum = y_spacing_sum + index_items[i]["text_position"]
+		end
+	end
+	local text_size_rate = (pos_dict["Text"]["H"] - y_spacing_sum) / items_size_sum
+	pos_dict["RuledLine"] = {}
+	for i=1, #index_items do
+		pos_dict["RuledLine"][i] = {}
+		if i == 1 then
+			pos_dict["RuledLine"][i]["Y"] = index_items[i]["text_position"] + index_items[i]["text_size"]*text_size_rate
+		else
+			if index_items[i]["indicate"] then
+				pos_dict["RuledLine"][i]["Y"] = index_items[i]["text_position"] + pos_dict["RuledLine"][i-1]["Y"] + index_items[i]["text_size"]*text_size_rate
+			else
+				pos_dict["RuledLine"][i]["Y"] = pos_dict["RuledLine"][i-1]["Y"]
+			end
+		end
+	end
+
+	for i=1, #index_items do
+		pos_dict["RuledLine"][i]["Y"] = pos_dict["RuledLine"][i]["Y"] + index_items[i]["text_size"]*tonumber(ini_dict["RuledLineOffsetY"])/32
+	end
+
+	--＜枠画像のサイズを取得＞
+	pos_dict["Frame"] = {}
+	if ini_dict["FrameType"] == "None" then
+		pos_dict["Frame"]["Floor"] = {}
+		pos_dict["Frame"]["Floor"]["H"] = 0
+		pos_dict["Frame"]["Floor"]["W"] = 0
+		pos_dict["Frame"]["Ceil"] = {}
+		pos_dict["Frame"]["Ceil"]["H"] = 0
+		pos_dict["Frame"]["Ceil"]["W"] = 0
+		pos_dict["Frame"]["Left"] = {}
+		pos_dict["Frame"]["Left"]["H"] = 0
+		pos_dict["Frame"]["Left"]["W"] = 0
+		pos_dict["Frame"]["Right"] = {}
+		pos_dict["Frame"]["Right"]["H"] = 0
+		pos_dict["Frame"]["Right"]["W"] = 0
+	else
+		obj.load("image",fold_back.."\\floor.png")
+		pos_dict["Frame"]["Floor"] = {}
+		pos_dict["Frame"]["Floor"]["H"] = obj.h
+		pos_dict["Frame"]["Floor"]["W"] = obj.w
+		obj.load("image",fold_back.."\\ceil.png")
+		pos_dict["Frame"]["Ceil"] = {}
+		pos_dict["Frame"]["Ceil"]["H"] = obj.h
+		pos_dict["Frame"]["Ceil"]["W"] = obj.w
+		obj.load("image",fold_back.."\\left.png")
+		pos_dict["Frame"]["Left"] = {}
+		pos_dict["Frame"]["Left"]["H"] = obj.h
+		pos_dict["Frame"]["Left"]["W"] = obj.w
+		obj.load("image",fold_back.."\\right.png")
+		pos_dict["Frame"]["Right"] = {}
+		pos_dict["Frame"]["Right"]["H"] = obj.h
+		pos_dict["Frame"]["Right"]["W"] = obj.w
+	end
+
+	--＜角画像のサイズを取得＞
+	pos_dict["Corner"] = {}
+	if ini_dict["CornerType"] == "None" then
+		pos_dict["Corner"]["LeftFloor"] = {}
+		pos_dict["Corner"]["LeftFloor"]["H"] =-1 * pos_dict["Frame"]["Floor"]["H"]
+		pos_dict["Corner"]["LeftFloor"]["W"] = -1 * pos_dict["Frame"]["Left"]["W"]
+		pos_dict["Corner"]["LeftCeil"] = {}
+		pos_dict["Corner"]["LeftCeil"]["H"] = -1 * pos_dict["Frame"]["Ceil"]["H"]
+		pos_dict["Corner"]["LeftCeil"]["W"] = -1 * pos_dict["Frame"]["Left"]["W"]
+		pos_dict["Corner"]["RightFloor"] = {}
+		pos_dict["Corner"]["RightFloor"]["H"] = -1 * pos_dict["Frame"]["Floor"]["H"]
+		pos_dict["Corner"]["RightFloor"]["W"] = -1 * pos_dict["Frame"]["Right"]["W"]
+		pos_dict["Corner"]["RightCeil"] = {}
+		pos_dict["Corner"]["RightCeil"]["H"] = -1 * pos_dict["Frame"]["Ceil"]["H"]
+		pos_dict["Corner"]["RightCeil"]["W"] = -1 * pos_dict["Frame"]["Right"]["W"]
+	else
+		obj.load("image",fold_back.."\\corner_lf.png")
+		pos_dict["Corner"]["LeftFloor"] = {}
+		pos_dict["Corner"]["LeftFloor"]["H"] = obj.h
+		pos_dict["Corner"]["LeftFloor"]["W"] = obj.w
+		obj.load("image",fold_back.."\\corner_lc.png")
+		pos_dict["Corner"]["LeftCeil"] = {}
+		pos_dict["Corner"]["LeftCeil"]["H"] = obj.h
+		pos_dict["Corner"]["LeftCeil"]["W"] = obj.w
+		obj.load("image",fold_back.."\\corner_rf.png")
+		pos_dict["Corner"]["RightFloor"] = {}
+		pos_dict["Corner"]["RightFloor"]["H"] = obj.h
+		pos_dict["Corner"]["RightFloor"]["W"] = obj.w
+		obj.load("image",fold_back.."\\corner_rc.png")
+		pos_dict["Corner"]["RightCeil"] = {}
+		pos_dict["Corner"]["RightCeil"]["H"] = obj.h
+		pos_dict["Corner"]["RightCeil"]["W"] = obj.w
+	end
+
+	--＜枠のRecursive配置数＞
+	if ini_dict["FrameType"] == "Recursive" then
+		pos_dict["Frame"]["Quantity"] = {}
+		--枠の配置数を横方向に算出
+		pos_dict["Frame"]["Quantity"]["W"] = math.ceil((ttrack0 -  pos_dict["Corner"]["LeftFloor"]["W"]/2 - pos_dict["Corner"]["RightFloor"]["W"]/2 + left_offset)/pos_dict["Frame"]["Ceil"]["W"])
+		--枠の配置数を縦方向に算出
+		pos_dict["Frame"]["Quantity"]["H"] = math.ceil((pos_dict["Text"]["H"] - pos_dict["Corner"]["LeftFloor"]["H"]/2 - pos_dict["Corner"]["LeftCeil"]["H"]/2 + ceil_offset + floor_offset)/pos_dict["Frame"]["Left"]["H"])
+	end
+
+	--＜角画像全体の配置位置を取得＞
+	if ini_dict["FrameType"] == "Recursive" then
+		pos_dict["Corner"]["Whole"] = {}
+		pos_dict["Corner"]["Whole"]["L"] = -1 * left_offset
+		pos_dict["Corner"]["Whole"]["F"] = pos_dict["Frame"]["Quantity"]["H"]*pos_dict["Frame"]["Left"]["H"] - ceil_offset + math.floor(pos_dict["Corner"]["LeftFloor"]["H"]/2) + math.floor(pos_dict["Corner"]["LeftCeil"]["H"]/2)
+		pos_dict["Corner"]["Whole"]["R"] = pos_dict["Frame"]["Quantity"]["W"]*pos_dict["Frame"]["Floor"]["W"] - left_offset + math.floor(pos_dict["Corner"]["LeftFloor"]["W"]/2) + math.floor(pos_dict["Corner"]["RightFloor"]["W"]/2)
+		pos_dict["Corner"]["Whole"]["C"] = -1 * ceil_offset
+	else
+		pos_dict["Corner"]["Whole"] = {}
+		pos_dict["Corner"]["Whole"]["L"] = -1 * left_offset
+		pos_dict["Corner"]["Whole"]["F"] = pos_dict["Text"]["H"] + floor_offset
+		pos_dict["Corner"]["Whole"]["R"] = ttrack0
+		pos_dict["Corner"]["Whole"]["C"] = -1 * ceil_offset
+	end
+
+	--＜ワンポイントワッペンを描画＞
+	--このままじゃ動かない。色々変更必要(少なくとも、設定ファイル読み込みとファイル名を変える必要あり)
+	pos_dict["Patch"] = {}
+	for i=1, tonumber(ini_dict["PatchQuantity"]) do
+		obj.load("image",fold_back.."\\one_point"..tostring(i)..".png")
+		pos_dict["Patch"][i] = {}
+		pos_dict["Patch"][i]["H"] = obj.h
+		pos_dict["Patch"][i]["W"] = obj.w
+		pos_dict["Patch"][i]["X"] = 0
+		pos_dict["Patch"][i]["Y"] = 0
+		if ini_dict["PatchPositionX"..tostring(i)] == "Right" then
+			pos_dict["Patch"][i]["X"] = pos_dict["Corner"]["Whole"]["R"] - pos_dict["Patch"][i]["W"]/2 - pos_dict["Frame"]["Right"]["W"]/2 + tonumber(ini_dict["PatchOffsetX"..tostring(i)])
+		elseif ini_dict["PatchPositionX"..tostring(i)] == "Left" then
+			pos_dict["Patch"][i]["X"] = pos_dict["Corner"]["Whole"]["L"] + pos_dict["Patch"][i]["W"]/2 + pos_dict["Frame"]["Left"]["W"]/2 + tonumber(ini_dict["PatchOffsetX"..tostring(i)])
+		elseif ini_dict["PatchPositionX"..tostring(i)] == "Mid" then
+			pos_dict["Patch"][i]["X"] = (pos_dict["Corner"]["Whole"]["L"] + pos_dict["Corner"]["Whole"]["R"]) / 2
+		end
+		if ini_dict["PatchPositionY"..tostring(i)] == "Ceil" then
+			pos_dict["Patch"][i]["Y"] = pos_dict["Corner"]["Whole"]["C"] + pos_dict["Patch"][i]["H"]/2 + pos_dict["Frame"]["Ceil"]["H"]/2 + tonumber(ini_dict["PatchOffsetY"..tostring(i)])
+		elseif ini_dict["PatchPositionY"..tostring(i)] == "Floor" then
+			pos_dict["Patch"][i]["Y"] = pos_dict["Corner"]["Whole"]["F"] - pos_dict["Patch"][i]["H"]/2 - pos_dict["Frame"]["Floor"]["H"]/2 + tonumber(ini_dict["PatchOffsetY"..tostring(i)])
+		elseif ini_dict["PatchPositionY"..tostring(i)] == "Mid" then
+			pos_dict["Patch"][i]["Y"] = (pos_dict["Corner"]["Whole"]["F"] + pos_dict["Corner"]["Whole"]["C"]) / 2
+		end
+		--ワンポイントワッペンの存在範囲を取得
+		pos_dict["Patch"][i]["L"] = pos_dict["Patch"][i]["X"] - pos_dict["Patch"][i]["W"] / 2
+		pos_dict["Patch"][i]["R"] = pos_dict["Patch"][i]["X"] + pos_dict["Patch"][i]["W"]  / 2
+		pos_dict["Patch"][i]["C"] = pos_dict["Patch"][i]["Y"] - pos_dict["Patch"][i]["H"]  / 2
+		pos_dict["Patch"][i]["F"] = pos_dict["Patch"][i]["Y"] + pos_dict["Patch"][i]["H"] / 2
+
+		if ini_dict["PatchOverLine"..tostring(i)] == "True" then
+			pos_dict["Patch"][i]["OverLine"] = true
+		else
+			pos_dict["Patch"][i]["OverLine"] = false
+		end
+	end
+
+	return pos_dict
+end
+
+--＜これ必要ないかもしれん。ただの念のため。＞
+local function clip_trying(lrfc, val)
+	if val > 0 then
+		obj.effect("クリッピング", lrfc, val)
+	end
+end
+
+--＜背景画像クリップ表示＞
+local function draw_back_image_clip(pos_dict, ox_pos, ox_sign, oy_pos, oy_sign, clip_w, clip_h)
+	obj.load("image",fold_back.."\\background.png")
+	obj.ox = ox_sign * obj.w / 2 + pos_dict["Corner"]["Whole"][ox_pos]
+	obj.oy = oy_sign * obj.h / 2 + pos_dict["Corner"]["Whole"][oy_pos]
+	if obj.w > (pos_dict["Corner"]["Whole"]["R"] - pos_dict["Corner"]["Whole"]["L"]) then
+		obj.effect("クリッピング", clip_w, obj.w - (pos_dict["Corner"]["Whole"]["R"] - pos_dict["Corner"]["Whole"]["L"]))
+	end
+	if obj.h > (pos_dict["Corner"]["Whole"]["F"] - pos_dict["Corner"]["Whole"]["C"]) then
+		obj.effect("クリッピング", clip_h, obj.h - (pos_dict["Corner"]["Whole"]["F"] - pos_dict["Corner"]["Whole"]["C"]))
+	end
+	obj.draw()
+end
+
+--＜背景画像リサイズ表示＞
+local function draw_back_image_resize(pos_dict)
+	obj.load("image",fold_back.."\\background.png")
+	obj.effect("リサイズ", "X", (pos_dict["Corner"]["Whole"]["R"]-pos_dict["Corner"]["Whole"]["L"])/obj.w*100)
+	obj.effect("リサイズ", "Y", (pos_dict["Corner"]["Whole"]["F"]-pos_dict["Corner"]["Whole"]["C"])/obj.h*100)
+	obj.ox = obj.w/2 + pos_dict["Corner"]["Whole"]["L"]
+	obj.oy = obj.h/2 + pos_dict["Corner"]["Whole"]["C"]
+	obj.draw()
+end
+
+--＜枠Recursive表示＞
+local function draw_frame_recursive(pos_dict, file_name, wf, lr, fc, ox_type, ox_sign, oy_type, oy_sign)
+	obj.load("image",fold_back.."\\"..file_name..".png")
+	for i=1, pos_dict["Frame"]["Quantity"][wf] do
+		obj.ox = pos_dict["Corner"]["Whole"][lr] + ox_sign * ( math.floor(pos_dict["Corner"]["Left"..ox_type]["W"] / 2) + i * pos_dict["Frame"][ox_type]["W"] - math.ceil(pos_dict["Frame"][ox_type]["W"]/2) )
+		obj.oy = pos_dict["Corner"]["Whole"][fc] + oy_sign * ( math.floor(pos_dict["Corner"][oy_type.."Ceil"]["H"] / 2) + i * pos_dict["Frame"][oy_type]["H"] - math.ceil(pos_dict["Frame"][oy_type]["H"]/2) )
+		--obj.effect()
+		obj.draw()
+	end
+end
+
+--＜枠クリッピング表示＞(末尾の-2は調整項)
+local function draw_frame_clip(pos_dict, file_name, lr, fc, ox_type, ox_sign, oy_type, oy_sign)
+	obj.load("image",fold_back.."\\"..file_name..".png")
+		obj.ox = pos_dict["Corner"]["Whole"][lr] + ox_sign * math.floor( pos_dict["Corner"]["Left"..ox_type]["W"] / 2 + obj.w/2 )
+		obj.oy = pos_dict["Corner"]["Whole"][fc] + oy_sign * math.floor( pos_dict["Corner"][oy_type.."Ceil"]["H"] / 2 + obj.h/2 )
+		if ox_sign == 1 then
+			clip_trying("右", obj.w - (pos_dict["Corner"]["Whole"]["R"] - pos_dict["Corner"]["Whole"]["L"]) + math.floor(pos_dict["Corner"]["Left"..ox_type]["W"] / 2) + math.floor(pos_dict["Corner"]["Right"..ox_type]["W"] / 2) )
+		else
+			clip_trying("下", obj.h - (pos_dict["Corner"]["Whole"]["F"] - pos_dict["Corner"]["Whole"]["C"]) + math.floor(pos_dict["Corner"][oy_type.."Ceil"]["H"] / 2) + math.floor(pos_dict["Corner"][oy_type.."Floor"]["H"] / 2) )
+		end
+		obj.draw()
+end
+
+--＜枠リサイズ表示＞(末尾の+2は調整項)
+local function draw_frame_resize(pos_dict, file_name, xy, lr, fc, ox_type, ox_sign, oy_type, oy_sign)
+	obj.load("image",fold_back.."\\"..file_name..".png")
+	if xy == "X" then
+		obj.effect("リサイズ", xy, ((pos_dict["Corner"]["Whole"]["R"] - pos_dict["Corner"]["Whole"]["L"]) - pos_dict["Corner"]["Left"..ox_type]["W"] / 2 - pos_dict["Corner"]["Right"..ox_type]["W"] / 2 + 2)/obj.w*100)
+	else
+		obj.effect("リサイズ", xy, ((pos_dict["Corner"]["Whole"]["F"] - pos_dict["Corner"]["Whole"]["C"]) - pos_dict["Corner"][oy_type.."Floor"]["H"] / 2 - pos_dict["Corner"][oy_type.."Ceil"]["H"] / 2 + 2)/obj.h*100)
+	end
+	obj.ox = pos_dict["Corner"]["Whole"][lr] + ox_sign * math.floor(pos_dict["Corner"]["Left"..ox_type]["W"] / 2 + obj.w/2)
+	obj.oy = pos_dict["Corner"]["Whole"][fc] + oy_sign * math.floor(pos_dict["Corner"][oy_type.."Ceil"]["H"] / 2 + obj.h/2)
+	obj.draw()
+end
+
+--＜角そのまま表示＞
+local function draw_corner_raw(pos_dict, file_name, lr, fc)
+	obj.load("image",fold_back.."\\"..file_name..".png")
+	obj.ox = pos_dict["Corner"]["Whole"][lr]
+	obj.oy = pos_dict["Corner"]["Whole"][fc]
+	obj.draw()
+end
+
+--＜罫線の縦方向座標と太さと指定＞
+local function set_ruled_line_base(text_item, obj_font_size, y_position)
+	obj.load("image",fold_back.."\\ruled_line.png")
+	local resize_rate = text_item["text_size"]/f_size*f_size/32
+	obj.effect("リサイズ", "拡大率", 100*resize_rate)
+	obj.oy = y_position --text_item["text_position"]
+end
+
+--＜罫線Recursive表示＞
+local function draw_ruled_line_recursive(pos_dict, text_item, y_position)
+	set_ruled_line_base(text_item, f_size, y_position)
+	j = 1
+	while (pos_dict["Corner"]["Whole"]["L"] + left_offset + obj.w/2 + text_item["indent_size"] + obj.w*(j-1)) < (pos_dict["Corner"]["Whole"]["R"] - left_offset - obj.w/2) do
+		obj.ox = pos_dict["Corner"]["Whole"]["L"] + left_offset + obj.w/2 + text_item["indent_size"] + obj.w*(j-1)
+		local flag = true
+		for k=1, #pos_dict["Patch"] do
+			if pos_dict["Patch"][k]["OverLine"] then
+				if  ((pos_dict["Patch"][k]["L"] < obj.ox + obj.w/2) and (obj.ox - obj.w/2 < pos_dict["Patch"][k]["R"])) and ((pos_dict["Patch"][k]["C"] < obj.oy + obj.h/2) and (obj.oy - obj.h/2 < pos_dict["Patch"][k]["F"])) then
+					flag = false
+				end
+			end
+		end
+		if flag then
+			obj.draw()
+		end
+		j = j + 1
+	end
+end
+
+--＜今のオブジェクトと重なっているy座標にあるPatchを(左点,右点)のリストとして返す関数＞
+local function get_overlaped_patch(pos_dict)
+	local y_overlaped_patch = {}
+	local dict_ctr = 1
+	for i=1, #pos_dict["Patch"] do
+		if pos_dict["Patch"][i]["OverLine"] then
+			if ((obj.oy - obj.h/2 < pos_dict["Patch"][i]["F"]) and (obj.oy + obj.h/2 > pos_dict["Patch"][i]["C"])) then --ワンポイントワッペンと被っているy座標の場合
+				local overlaped_patch = {}
+				overlaped_patch["L"] = pos_dict["Patch"][i]["L"]
+				overlaped_patch["R"] = pos_dict["Patch"][i]["R"]
+				y_overlaped_patch[dict_ctr] = overlaped_patch
+				dict_ctr = dict_ctr + 1
+			end
+		end
+	end
+	return y_overlaped_patch
+end
+
+--＜overlaped_patchを左橋x座標でソート(ほんとはマージソートとかした方がいいんだろうけど、余力がなかった)＞
+local function sort_by_left(overlaped_patch_dict)
+	local sorted_op_dict = {}
+	local choiced = {}
+	for i=1, #overlaped_patch_dict do
+		choiced[i] = false
+	end
+	for j=1, #overlaped_patch_dict do
+		local min_ctr = -1
+		for i=1, #overlaped_patch_dict do
+			if choiced[i] == false then
+				min_ctr = i
+			end
+		end
+		for i=1, #overlaped_patch_dict do
+			if choiced[i] == false then
+				if overlaped_patch_dict[i]["L"] < overlaped_patch_dict[min_ctr]["L"] then
+					min_ctr = i
+				end
+			end
+		end
+		sorted_op_dict[j] = overlaped_patch_dict[min_ctr]
+		choiced[min_ctr] = true
+	end
+	return sorted_op_dict
+end
+
+--＜あるY座標でoverlaped_patchの位置被りを見つけてマージ＞
+local function merge_patch_range(sorted_op_dict)
+	local merged_op_dict = {}
+	if #sorted_op_dict == 0 then
+		return merged_op_dict
+	end
+	merged_op_dict[1] = sorted_op_dict[1]
+	for i=2, #sorted_op_dict do
+		if sorted_op_dict[i]["L"] < merged_op_dict[#merged_op_dict]["R"] then
+			if merged_op_dict[#merged_op_dict]["R"] < sorted_op_dict[i]["R"] then
+				merged_op_dict[#merged_op_dict]["R"] = sorted_op_dict[i]["R"]
+			end
+		else
+			merged_op_dict[#merged_op_dict + 1] = sorted_op_dict[i]
+		end
+	end
+	return merged_op_dict
+end
+
+--＜罫線の範囲に関係ない範囲は削除(必ずマージが終わってから実行)＞
+local function remove_unnecessary_range(merged_op_dict, line_left, line_right)
+	nes_dict = {}
+	for i = 1, #merged_op_dict do
+		if (merged_op_dict[i]["R"] > line_left) and (merged_op_dict[i]["L"] < line_right) then
+			nes_dict[#nes_dict + 1] = merged_op_dict[i]
+		end
+	end
+	return nes_dict
+end
+
+--＜overlaped_patchを罫線の左端から右端の範囲で反転＞
+local function rev_range(ban_range_dict, line_left, line_right)
+	local rev_dict = {}
+	if #ban_range_dict == 0 then
+		rev_dict[1] = {}
+		rev_dict[1]["L"] = line_left
+		rev_dict[1]["R"] = line_right
+		return rev_dict
+	end
+
+	if ban_range_dict[1]["L"] > line_left then
+		rev_dict[1] = {}
+		rev_dict[1]["L"] = line_left
+		rev_dict[1]["R"] = ban_range_dict[1]["L"]
+	end
+
+	for i=1, #ban_range_dict-1 do
+		rev_dict[#rev_dict+1] = {}
+		rev_dict[#rev_dict]["L"] = ban_range_dict[i]["R"]
+		rev_dict[#rev_dict]["R"] = ban_range_dict[i+1]["L"]
+	end
+
+	if ban_range_dict[#ban_range_dict]["R"] < line_right then
+		rev_dict[#rev_dict+1] = {}
+		rev_dict[#rev_dict]["L"] = ban_range_dict[#ban_range_dict]["R"]
+		rev_dict[#rev_dict]["R"] = line_right
+	end
+
+	return rev_dict
+end
+
+--＜デバッグ用の関数＞
+local function lr_list_debug(a_list)
+	tabt = ""
+	for i=1, #a_list do
+		tabt = tabt.."("..tostring(a_list[i]["L"])..","..tostring(a_list[i]["R"])..") "
+	end
+	obj.load("text",tabt)
+	obj.draw()
+end
+
+local function get_draw_range(pos_dict, line_left, line_right)
+	local y_overlaped_patch = get_overlaped_patch(pos_dict)
+	local sorted = sort_by_left(y_overlaped_patch)
+	local merged = merge_patch_range(sorted)
+	local minimum = remove_unnecessary_range(merged, line_left, line_right)
+	local draw_range = rev_range(minimum, line_left, line_right)
+	return draw_range
+end
+
+--＜罫線描画可能範囲のリストから罫線をlongclip描画＞
+local function draw_ruled_line_longclip(pos_dict, text_item, y_position)
+	local line_left = pos_dict["Corner"]["Whole"]["L"] + left_offset + text_item["indent_size"]
+	local line_right = pos_dict["Corner"]["Whole"]["R"] - left_offset
+	local ruled_line_width = line_right-line_left
+	set_ruled_line_base(text_item, f_size, y_position)
+	local draw_range = get_draw_range(pos_dict, line_left, line_right)
+	for i=1, #draw_range do
+		set_ruled_line_base(text_item, f_size, y_position)
+		obj.ox = (pos_dict["Corner"]["Whole"]["L"] + left_offset + text_item["indent_size"]) + obj.w/2
+		if obj.w > ruled_line_width then
+			obj.effect("クリッピング", "右", obj.w - ruled_line_width)
+		end
+		--ここから範囲指定ゾーン
+		obj.effect("クリッピング", "左", draw_range[i]["L"] - line_left)
+		obj.effect("クリッピング", "右", line_right - draw_range[i]["R"])
+		obj.draw()
+	end
+end
+
+--＜罫線描画可能範囲のリストから罫線をResize描画＞
+local function draw_ruled_line_resize(pos_dict, text_item, y_position)
+	local line_left = pos_dict["Corner"]["Whole"]["L"] + left_offset + text_item["indent_size"]
+	local line_right = pos_dict["Corner"]["Whole"]["R"] - left_offset
+	local ruled_line_width = line_right-line_left
+	set_ruled_line_base(text_item, f_size, y_position)
+	local draw_range = get_draw_range(pos_dict, line_left, line_right)
+	for i=1, #draw_range do
+		set_ruled_line_base(text_item, f_size, y_position)
+		obj.effect("リサイズ", "X", ruled_line_width/obj.w*100)
+		obj.ox = line_left + obj.w/2
+		--ここから範囲指定ゾーン
+		obj.effect("クリッピング", "左", draw_range[i]["L"] - line_left)
+		obj.effect("クリッピング", "右", line_right - draw_range[i]["R"])
+		obj.draw()
+	end
+end
+
+--＜背景オブジェクトを表示する場合＞
+if tcheck3 == 1 then
+	--＜設定ファイルの読み込み＞
+	local ini_dict = load_theme_ini()
+	local pos_dict = load_object_positions(ini_dict, ntext, items)
+
+	--＜背景画像を描画＞
+	if ini_dict["BackImageType"] == "LongClip" then
+		if ini_dict["BackImagePosition"] == "LeftCeil" then
+			draw_back_image_clip(pos_dict, "L", 1, "C", 1, "右", "下")
+		elseif ini_dict["BackImagePosition"] == "LeftFloor" then
+			draw_back_image_clip(pos_dict, "L", 1, "F", -1, "右", "上")
+		elseif ini_dict["BackImagePosition"] == "RightCeil" then
+			draw_back_image_clip(pos_dict, "R", -1, "C", 1, "左", "下")
+		elseif ini_dict["BackImagePosition"] == "RightFloor" then
+			draw_back_image_clip(pos_dict, "R", -1, "F", -1, "左", "上")
+		end
+	elseif ini_dict["BackImageType"] == "Resize" then
+		draw_back_image_resize(pos_dict)
+	end
+
+	--＜ワンポイントを描画＞
+	for i=1, tonumber(ini_dict["PatchQuantity"]) do
+		obj.load("image",fold_back.."\\one_point"..tostring(i)..".png")
+		clip_trying("右", pos_dict["Patch"][i]["X"]+pos_dict["Patch"][i]["W"]/2-pos_dict["Corner"]["Whole"]["R"])
+		clip_trying("左", -1 * (pos_dict["Patch"][i]["X"]-pos_dict["Patch"][i]["W"]/2-pos_dict["Corner"]["Whole"]["L"]))
+		obj.ox = pos_dict["Patch"][i]["X"]
+		clip_trying("下", pos_dict["Patch"][i]["Y"]+pos_dict["Patch"][i]["H"]/2-pos_dict["Corner"]["Whole"]["F"])
+		clip_trying("上", -1 * (pos_dict["Patch"][i]["Y"]-pos_dict["Patch"][i]["H"]/2-pos_dict["Corner"]["Whole"]["C"]))
+		obj.oy = pos_dict["Patch"][i]["Y"]
+		obj.draw()
+	end
+
+	--＜枠を描画＞
+	if ini_dict["FrameType"] == "Recursive" then
+		draw_frame_recursive(pos_dict, "floor", "W", "L", "F", "Floor", 1, "Left", 0)
+		draw_frame_recursive(pos_dict, "ceil", "W", "L", "C", "Ceil", 1, "Left", 0)
+		draw_frame_recursive(pos_dict, "left", "H", "L", "C", "Ceil", 0, "Left", 1)
+		draw_frame_recursive(pos_dict, "right", "H", "R", "C", "Ceil", 0, "Right", 1)
+	elseif ini_dict["FrameType"] == "LongClip" then
+		draw_frame_clip(pos_dict, "floor", "L", "F", "Floor", 1, "Left", 0)
+		draw_frame_clip(pos_dict, "ceil", "L", "C", "Ceil", 1, "Left", 0)
+		draw_frame_clip(pos_dict, "left", "L", "C", "Ceil", 0, "Left", 1)
+		draw_frame_clip(pos_dict, "right", "R", "C", "Ceil", 0, "Right", 1)
+	elseif ini_dict["FrameType"] == "Resize" then
+		draw_frame_resize(pos_dict, "floor", "X", "L", "F", "Floor", 1, "Left", 0)
+		draw_frame_resize(pos_dict, "ceil", "X", "L", "C", "Ceil", 1, "Left", 0)
+		draw_frame_resize(pos_dict, "left", "Y", "L", "C", "Ceil", 0, "Left", 1)
+		draw_frame_resize(pos_dict, "right", "Y", "R", "C", "Ceil", 0, "Right", 1)
+	end
+
+	--＜角を描画＞
+	if ini_dict["CornerType"] == "Raw" then
+		draw_corner_raw(pos_dict, "corner_lf", "L", "F")
+		draw_corner_raw(pos_dict, "corner_lc", "L", "C")
+		draw_corner_raw(pos_dict, "corner_rc", "R", "C")
+		draw_corner_raw(pos_dict, "corner_rf", "R", "F")
+	end
+
+	--＜罫線表示部分＞
+	--各行表示
+	for i=1, #items do
+		if items[i]["indicate"] then
+			if ini_dict["RuledLineType"] == "Recursive" then
+				draw_ruled_line_recursive(pos_dict, items[i], pos_dict["RuledLine"][i]["Y"])
+			elseif ini_dict["RuledLineType"] == "LongClip" then
+				draw_ruled_line_longclip(pos_dict, items[i], pos_dict["RuledLine"][i]["Y"])
+			elseif ini_dict["RuledLineType"] == "Resize" then
+				draw_ruled_line_resize(pos_dict, items[i], pos_dict["RuledLine"][i]["Y"])
+			end
+		end
+	end
+
+
+	--＜テキスト表示部分＞
+	obj.setfont(d_font,f_size,d_type,d_color,d_color2)
+	obj.load("text",ntext)
+
+	--＜テキストの位置を調整＞
+	obj.oy = pos_dict["Text"]["H"]/2
+	obj.ox = pos_dict["Text"]["W"]/2
+
+	--＜テキスト描画＞
+	--obj.effect()
+	obj.draw()
+else
+	--＜テキスト表示部分＞
+	obj.setfont(d_font,f_size,d_type,d_color,d_color2)
+	obj.load("text",ntext)
+
+	--＜テキストの位置を調整＞
+	obj.oy = obj.h/2
+	obj.ox = obj.w/2
+end
