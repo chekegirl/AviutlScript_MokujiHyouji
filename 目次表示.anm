@@ -2,7 +2,7 @@
 --track1:ｲﾝﾃﾞﾝﾄ,0,10,1,0.1
 --track2:深度ｻｲｽﾞ,-100,100,10,0.1
 --track3:選択ｻｲｽﾞ,-100,100,20,0.1
---dialog:選択文字色/col,tcolor1=0xFFFFFF;選択文字縁色/col,tcolor2=0x000000;上位項目を含む/chk,tcheck1=1;折りたたむ/chk,tcheck2=1;背景を表示する/chk,tcheck3=1;背景右長さ,ttrack0=2;背景ﾌｫﾙﾀﾞ,fold_back="";枠左余白,left_offset=0;枠上余白,ceil_offset=0;枠下余白,floor_offset=0;
+--dialog:選択文字色/col,tcolor1=0xFFFFFF;選択文字縁色/col,tcolor2=0x000000;上位項目を含む/chk,tcheck1=1;折りたたむ/chk,tcheck2=1;背景を表示する/chk,tcheck3=0;背景右長さ,ttrack0=2;背景ﾌｫﾙﾀﾞ,fold_back="";枠左余白,left_offset=0;枠上余白,ceil_offset=0;枠下余白,floor_offset=0;
 
 --項目の進み具合を整数にしておく
 local t0=math.floor(obj.track0)
@@ -533,8 +533,8 @@ local function draw_frame_resize(pos_dict, file_name, xy, lr, fc, ox_type, ox_si
 	else
 		obj.effect("リサイズ", xy, ((pos_dict["Corner"]["Whole"]["F"] - pos_dict["Corner"]["Whole"]["C"]) - pos_dict["Corner"][oy_type.."Floor"]["H"] / 2 - pos_dict["Corner"][oy_type.."Ceil"]["H"] / 2 + 2)/obj.h*100)
 	end
-	obj.ox = pos_dict["Corner"]["Whole"][lr] + ox_sign * math.floor(pos_dict["Corner"]["Left"..ox_type]["W"] / 2 + obj.w/2)
-	obj.oy = pos_dict["Corner"]["Whole"][fc] + oy_sign * math.floor(pos_dict["Corner"][oy_type.."Ceil"]["H"] / 2 + obj.h/2)
+	obj.ox = pos_dict["Corner"]["Whole"][lr] + ox_sign * math.ceil(pos_dict["Corner"]["Left"..ox_type]["W"] / 2 + obj.w/2 - 1)
+	obj.oy = pos_dict["Corner"]["Whole"][fc] + oy_sign * math.ceil(pos_dict["Corner"][oy_type.."Ceil"]["H"] / 2 + obj.h/2 - 1)
 	obj.draw()
 end
 
