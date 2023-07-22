@@ -1,4 +1,4 @@
-使い方は[ここに解説サイトのURLを貼る]を見てください。もしくは頑張って地頭で考えてください。
+使い方は https://chekegirl.github.io/works/aviutlscript1_mokujihyouji/ を見てください。もしくは頑張って地頭で考えてください。
 
 ＝＝＝利用規約＝＝＝
 
